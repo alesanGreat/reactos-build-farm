@@ -38,7 +38,7 @@ on:
           - Debug
           - Release
       targets:
-        description: Space-separated Ninja/CMake targets (for example: cmd cmd_apitest)
+        description: 'Space-separated Ninja/CMake targets (for example: cmd cmd_apitest)'
         required: true
         default: bootcd
         type: string
