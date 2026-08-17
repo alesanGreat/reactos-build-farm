@@ -1,0 +1,267 @@
+name: ReactOS Target Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: Public ReactOS repository to build (owner/repo)
+        required: true
+        default: alesanGreat/reactos
+        type: string
+      source_ref:
+        description: Branch, tag, or commit SHA to build
+        required: true
+        default: master
+        type: string
+      arch:
+        description: ReactOS architecture
+        required: true
+        default: i386
+        type: choice
+        options:
+          - i386
+          - amd64
+      compiler:
+        description: RosBE compiler
+        required: true
+        default: gcc
+        type: choice
+        options:
+          - gcc
+          - clang
+      build_type:
+        description: CMake build type
+        required: true
+        default: Debug
+        type: choice
+        options:
+          - Debug
+          - Release
+      targets:
+        description: Space-separated Ninja/CMake targets (for example: cmd cmd_apitest)
+        required: true
+        default: bootcd
+        type: string
+      enable_rostests:
+        description: Configure with ENABLE_ROSTESTS=1
+        required: true
+        default: true
+        type: boolean
+      enable_rosapps:
+        description: Configure with ENABLE_ROSAPPS=1
+        required: true
+        default: false
+        type: boolean
+      i18n_lang:
+        description: I18N_LANG value; en-US keeps targeted builds lean
+        required: true
+        default: en-US
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reactos-target-${{ inputs.source_repository }}-${{ inputs.source_ref }}-${{ inputs.arch }}-${{ inputs.compiler }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ inputs.compiler }} ${{ inputs.arch }} ${{ inputs.build_type }} — ${{ inputs.targets }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Validate requested build
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          TARGETS_RAW: ${{ inputs.targets }}
+          I18N_LANG: ${{ inputs.i18n_lang }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Invalid source_repository: $SOURCE_REPOSITORY" >&2
+            exit 2
+          fi
+          if [[ -z "$SOURCE_REF" || "$SOURCE_REF" == *$'\n'* || "$SOURCE_REF" == *$'\r'* ]]; then
+            echo "Invalid source_ref" >&2
+            exit 2
+          fi
+          if [[ ! "$I18N_LANG" =~ ^[A-Za-z0-9_.@+-]+$ ]]; then
+            echo "Invalid i18n_lang: $I18N_LANG" >&2
+            exit 2
+          fi
+
+          read -r -a target_array <<< "$TARGETS_RAW"
+          if (( ${#target_array[@]} == 0 || ${#target_array[@]} > 24 )); then
+            echo "targets must contain between 1 and 24 targets" >&2
+            exit 2
+          fi
+          : > "$GITHUB_WORKSPACE/targets.txt"
+          for target in "${target_array[@]}"; do
+            if [[ ! "$target" =~ ^[A-Za-z0-9_.:+/-]+$ ]]; then
+              echo "Invalid target: $target" >&2
+              exit 2
+            fi
+            printf '%s\n' "$target" >> "$GITHUB_WORKSPACE/targets.txt"
+          done
+
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          {
+            echo "source_repository=$SOURCE_REPOSITORY"
+            echo "source_ref=$SOURCE_REF"
+            echo "targets=$TARGETS_RAW"
+            echo "requested_by=${{ github.actor }}"
+            echo "run_id=${{ github.run_id }}"
+          } > "$GITHUB_WORKSPACE/artifacts/request.txt"
+
+      - name: Get RosBE build specifics
+        id: get_rosbe_spec
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "-march = $(gcc -march=native -Q --help=target | grep '\-march=  ' | awk '{print $NF}')"
+          echo "march-sha=$(gcc -march=native -Q --help=target | sha1sum | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "git-sha=$(git ls-remote https://github.com/zefklop/RosBE.git | grep unix_amd64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          wget -q https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh
+
+      - name: Restore RosBE cache
+        id: get_rosbe
+        uses: actions/cache@v5
+        with:
+          path: RosBE-CI
+          key: RosBE-CI-${{ runner.os }}-${{ steps.get_rosbe_spec.outputs.march-sha }}-${{ steps.get_rosbe_spec.outputs.git-sha }}-${{ hashFiles('./build_rosbe_ci.sh') }}
+
+      - name: Compile RosBE
+        if: steps.get_rosbe.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x build_rosbe_ci.sh
+          ./build_rosbe_ci.sh "$GITHUB_WORKSPACE/RosBE-CI"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ccache ninja-build
+
+      - name: Install LLVM for clang
+        if: inputs.compiler == 'clang'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LLVM_VERSION=13
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          echo "D_CLANG_VERSION=-DCLANG_VERSION=$LLVM_VERSION" >> "$GITHUB_ENV"
+
+      - name: Checkout requested ReactOS ref
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+          path: src
+          fetch-depth: 1
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          {
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+            echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache"
+            echo "CCACHE_MAXSIZE=1G"
+            echo "CCACHE_SLOPPINESS=time_macros"
+            echo "CCACHE_COMPILERCHECK=string:${{ steps.get_rosbe_spec.outputs.git-sha }}-${{ hashFiles('./build_rosbe_ci.sh') }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore compiler cache
+        uses: actions/cache@v5
+        with:
+          path: ccache
+          key: reactos-ccache-${{ inputs.compiler }}-${{ inputs.arch }}-${{ inputs.build_type }}-${{ inputs.source_ref }}-${{ github.run_id }}
+          restore-keys: |
+            reactos-ccache-${{ inputs.compiler }}-${{ inputs.arch }}-${{ inputs.build_type }}-
+
+      - name: Configure ReactOS
+        shell: bash
+        env:
+          ARCH: ${{ inputs.arch }}
+          COMPILER: ${{ inputs.compiler }}
+          BUILD_TYPE: ${{ inputs.build_type }}
+          I18N_LANG: ${{ inputs.i18n_lang }}
+          ENABLE_ROSTESTS: ${{ inputs.enable_rostests && '1' || '0' }}
+          ENABLE_ROSAPPS: ${{ inputs.enable_rosapps && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          cmd="cmake -S $GITHUB_WORKSPACE/src -B $GITHUB_WORKSPACE/build -G Ninja -DCMAKE_TOOLCHAIN_FILE:FILEPATH=toolchain-${COMPILER}.cmake -DARCH:STRING=${ARCH} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DENABLE_CCACHE=1 -DENABLE_ROSTESTS=${ENABLE_ROSTESTS} -DENABLE_ROSAPPS=${ENABLE_ROSAPPS} -DI18N_LANG=${I18N_LANG} ${D_CLANG_VERSION:-}"
+          echo "$cmd" > "$GITHUB_WORKSPACE/artifacts/configure-command.txt"
+          printf '%s\n' "$cmd" | "$GITHUB_WORKSPACE/RosBE-CI/RosBE.sh" . 0 "$ARCH" 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/configure.log"
+
+      - name: Build requested targets
+        shell: bash
+        env:
+          ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          targets_joined="$(paste -sd' ' "$GITHUB_WORKSPACE/targets.txt")"
+          cmd="cmake --build $GITHUB_WORKSPACE/build --target ${targets_joined} -- -k0"
+          echo "$cmd" > "$GITHUB_WORKSPACE/artifacts/build-command.txt"
+          printf '%s\n' "$cmd" | "$GITHUB_WORKSPACE/RosBE-CI/RosBE.sh" . 0 "$ARCH" 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build.log"
+
+      - name: Record source revision
+        if: always()
+        shell: bash
+        run: |
+          if [[ -d "$GITHUB_WORKSPACE/src/.git" ]]; then
+            git -C "$GITHUB_WORKSPACE/src" rev-parse HEAD > "$GITHUB_WORKSPACE/artifacts/source-sha.txt" || true
+            git -C "$GITHUB_WORKSPACE/src" status --short > "$GITHUB_WORKSPACE/artifacts/source-status.txt" || true
+          fi
+          ccache -s > "$GITHUB_WORKSPACE/artifacts/ccache.txt" 2>&1 || true
+
+      - name: Collect target artifacts
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          root = Path('build')
+          out = Path('artifacts/files')
+          out.mkdir(parents=True, exist_ok=True)
+          targets = [line.strip() for line in Path('targets.txt').read_text().splitlines() if line.strip()]
+          stems = {Path(t).name.lower() for t in targets}
+          always_names = {'bootcd.iso', 'bootcdregtest.iso', 'livecd.iso'}
+          copied = []
+          if root.exists():
+              for path in root.rglob('*'):
+                  if not path.is_file():
+                      continue
+                  name = path.name.lower()
+                  stem = path.stem.lower()
+                  if name in always_names or stem in stems or name in stems:
+                      rel = path.relative_to(root)
+                      dest = out / rel
+                      dest.parent.mkdir(parents=True, exist_ok=True)
+                      try:
+                          shutil.copy2(path, dest)
+                          copied.append(str(rel))
+                      except OSError as exc:
+                          print(f'warning: could not copy {path}: {exc}')
+          Path('artifacts/collected-files.txt').write_text('\n'.join(copied) + ('\n' if copied else ''))
+          print(f'Collected {len(copied)} target artifacts')
+          PY
+
+      - name: Upload logs and compiled target artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reactos-${{ inputs.compiler }}-${{ inputs.arch }}-${{ inputs.build_type }}-${{ github.run_id }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
