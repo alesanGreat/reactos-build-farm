@@ -17,21 +17,27 @@ Defaults deliberados para trabajo iterativo:
 - `ENABLE_ROSTESTS=1`
 - `I18N_LANG=en-US`
 
-## Uso por GitHub CLI
+## Uso recomendado desde el workspace ReactOS
+
+El helper canónico es:
+
+`C:\Team Dropbox\Valis Idealis\Ale\Programacion\ReactOS\tooling\reactos-actions.py`
 
 Ejemplo para una rama ya pusheada al fork:
 
 ```cmd
-gh workflow run build-reactos.yml --repo alesanGreat/reactos-build-farm --ref main -f source_repository=alesanGreat/reactos -f source_ref=rostests-354-wininet-timeouts -f arch=i386 -f compiler=gcc -f build_type=Debug -f targets="wininet_winetest" -F enable_rostests=true -F enable_rosapps=false -f i18n_lang=en-US
+C:\Users\alesanGreat\miniforge3\python.exe "C:\Team Dropbox\Valis Idealis\Ale\Programacion\ReactOS\tooling\reactos-actions.py" run rostests-354-wininet-timeouts wininet_winetest
 ```
 
-Luego consultar:
+Consultar, esperar y descargar artefactos:
 
 ```cmd
-gh run list --repo alesanGreat/reactos-build-farm --workflow build-reactos.yml --limit 10
-gh run watch RUN_ID --repo alesanGreat/reactos-build-farm
-gh run download RUN_ID --repo alesanGreat/reactos-build-farm
+C:\Users\alesanGreat\miniforge3\python.exe "C:\Team Dropbox\Valis Idealis\Ale\Programacion\ReactOS\tooling\reactos-actions.py" status RUN_ID
+C:\Users\alesanGreat\miniforge3\python.exe "C:\Team Dropbox\Valis Idealis\Ale\Programacion\ReactOS\tooling\reactos-actions.py" wait RUN_ID
+C:\Users\alesanGreat\miniforge3\python.exe "C:\Team Dropbox\Valis Idealis\Ale\Programacion\ReactOS\tooling\reactos-actions.py" download RUN_ID --destination C:\ReactOS\github-actions-artifacts\RUN_ID --extract
 ```
+
+El helper reutiliza Git Credential Manager sin imprimir el token, autentica las consultas para evitar el rate limit anónimo, tolera fallos transitorios de lectura y protege la credencial al seguir redirects de artifacts. GitHub CLI sigue siendo una alternativa válida, pero el helper evita depender de los bloqueos intermitentes observados en algunos subcomandos `gh api`/`gh repo` de DASHF15.
 
 ## Reglas operativas
 
@@ -42,6 +48,7 @@ gh run download RUN_ID --repo alesanGreat/reactos-build-farm
 5. No eliminar ni degradar `C:\RosBE-portable`, `C:\ReactOS\build`, scripts locales o recetas de Ninja/CMake. Ambos caminos son soportados.
 6. No usar esta granja para abrir PRs upstream automáticamente. Su función es build/QA; publicación upstream sigue el flujo ReactOS existente.
 7. Los inputs `targets`, `source_repository` e `i18n_lang` se validan antes de interpolarse en comandos para evitar inyección accidental.
+8. El runbook completo del workspace está en `docs/github-actions-builds.md`; la política es remoto primero para carga pesada y local preservado como opción/fallback.
 
 ## Artefactos
 
