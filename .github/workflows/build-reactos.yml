@@ -125,7 +125,12 @@ jobs:
           echo "-march = $(gcc -march=native -Q --help=target | grep '\-march=  ' | awk '{print $NF}')"
           echo "march-sha=$(gcc -march=native -Q --help=target | sha1sum | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           echo "git-sha=$(git ls-remote https://github.com/zefklop/RosBE.git | grep unix_amd64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          wget -q https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh
+          wget --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 -q \
+            https://gist.githubusercontent.com/zefklop/b2d6a0b470c70183e93d5285a03f5899/raw/build_rosbe_ci.sh
+          # The upstream bootstrap does not stop on failed downloads. Harden every
+          # wget it launches so transient GNU/SourceForge failures do not silently
+          # produce an incomplete RosBE tree.
+          sed -i 's/^wget /wget --tries=5 --waitretry=5 --retry-on-http-error=429,500,502,503,504 /' build_rosbe_ci.sh
 
       - name: Restore RosBE cache
         id: get_rosbe
@@ -134,13 +139,42 @@ jobs:
           path: RosBE-CI
           key: RosBE-CI-${{ runner.os }}-${{ steps.get_rosbe_spec.outputs.march-sha }}-${{ steps.get_rosbe_spec.outputs.git-sha }}-${{ hashFiles('./build_rosbe_ci.sh') }}
 
-      - name: Compile RosBE
-        if: steps.get_rosbe.outputs.cache-hit != 'true'
+      - name: Ensure RosBE toolchain
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -x "$GITHUB_WORKSPACE/RosBE-CI/RosBE.sh" ]]; then
+            echo "Using validated RosBE cache"
+            exit 0
+          fi
+
           chmod +x build_rosbe_ci.sh
-          ./build_rosbe_ci.sh "$GITHUB_WORKSPACE/RosBE-CI"
+          for attempt in 1 2 3; do
+            echo "Building RosBE, attempt $attempt/3"
+            rm -rf "$GITHUB_WORKSPACE/RosBE-CI"
+            attempt_dir="$RUNNER_TEMP/rosbe-bootstrap-$attempt"
+            rm -rf "$attempt_dir"
+            mkdir -p "$attempt_dir"
+
+            if (cd "$attempt_dir" && \
+                "$GITHUB_WORKSPACE/build_rosbe_ci.sh" "$GITHUB_WORKSPACE/RosBE-CI"); then
+              :
+            else
+              echo "RosBE bootstrap returned failure on attempt $attempt" >&2
+            fi
+
+            if [[ -x "$GITHUB_WORKSPACE/RosBE-CI/RosBE.sh" ]]; then
+              echo "RosBE validated after attempt $attempt"
+              exit 0
+            fi
+
+            echo "RosBE bootstrap produced no RosBE.sh on attempt $attempt" >&2
+            rm -rf "$GITHUB_WORKSPACE/RosBE-CI" "$attempt_dir"
+            sleep $((attempt * 5))
+          done
+
+          echo "RosBE bootstrap failed after 3 attempts" >&2
+          exit 1
 
       - name: Install build dependencies
         shell: bash
