@@ -50,6 +50,7 @@ El helper reutiliza Git Credential Manager sin imprimir el token, autentica las 
 7. Los inputs `targets`, `source_repository` e `i18n_lang` se validan antes de interpolarse en comandos para evitar inyección accidental.
 8. El runbook completo del workspace está en `docs/github-actions-builds.md`; la política es remoto primero para carga pesada y local preservado como opción/fallback.
 9. El bootstrap de RosBE valida que `RosBE-CI/RosBE.sh` exista realmente antes de continuar y reintenta descargas transitorias (incluidos HTTP 5xx). Un script de bootstrap que termine con código 0 pero deje un toolchain incompleto se considera fallo, nunca build exitoso.
+10. Ninja se instala por `apt` sólo si realmente falta. `ccache` es una optimización opcional: si el runner no lo trae, el build continúa con `ENABLE_CCACHE=0` en vez de quedar bloqueado descargando paquetes. No reintroducir un `apt-get update/install` obligatorio en cada build.
 
 ## Artefactos
 
