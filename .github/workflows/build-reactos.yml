@@ -176,12 +176,51 @@ jobs:
           echo "RosBE bootstrap failed after 3 attempts" >&2
           exit 1
 
-      - name: Install build dependencies
+      - name: Ensure build dependencies
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y ccache ninja-build
+
+          # GitHub's Ubuntu images normally ship Ninja already. Do not make every
+          # ReactOS build depend on an apt mirror just to reinstall it.
+          if ! command -v ninja >/dev/null 2>&1; then
+            installed=0
+            for attempt in 1 2 3; do
+              echo "Installing Ninja, attempt $attempt/3"
+              if timeout 180s sudo apt-get \
+                    -o Acquire::Retries=5 \
+                    -o Acquire::http::Timeout=20 \
+                    -o Acquire::https::Timeout=20 \
+                    -o DPkg::Lock::Timeout=30 \
+                    update -qq && \
+                 timeout 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+                    -o Acquire::Retries=5 \
+                    -o Acquire::http::Timeout=20 \
+                    -o Acquire::https::Timeout=20 \
+                    -o DPkg::Lock::Timeout=30 \
+                    install -y --no-install-recommends ninja-build; then
+                installed=1
+                break
+              fi
+              sleep $((attempt * 5))
+            done
+            if [[ "$installed" != 1 ]]; then
+              echo "Unable to install required Ninja build tool" >&2
+              exit 1
+            fi
+          fi
+          ninja --version
+
+          # ccache is an optimization, not a build requirement. If the runner
+          # image does not already have it, build normally instead of blocking
+          # on apt solely for ccache.
+          if command -v ccache >/dev/null 2>&1; then
+            echo "ENABLE_CCACHE_EFFECTIVE=1" >> "$GITHUB_ENV"
+            ccache --version | head -n 1
+          else
+            echo "ENABLE_CCACHE_EFFECTIVE=0" >> "$GITHUB_ENV"
+            echo "ccache unavailable; continuing without compiler cache"
+          fi
 
       - name: Install LLVM for clang
         if: inputs.compiler == 'clang'
@@ -232,7 +271,7 @@ jobs:
           ENABLE_ROSAPPS: ${{ inputs.enable_rosapps && '1' || '0' }}
         run: |
           set -euo pipefail
-          cmd="cmake -S $GITHUB_WORKSPACE/src -B $GITHUB_WORKSPACE/build -G Ninja -DCMAKE_TOOLCHAIN_FILE:FILEPATH=toolchain-${COMPILER}.cmake -DARCH:STRING=${ARCH} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DENABLE_CCACHE=1 -DENABLE_ROSTESTS=${ENABLE_ROSTESTS} -DENABLE_ROSAPPS=${ENABLE_ROSAPPS} -DI18N_LANG=${I18N_LANG} ${D_CLANG_VERSION:-}"
+          cmd="cmake -S $GITHUB_WORKSPACE/src -B $GITHUB_WORKSPACE/build -G Ninja -DCMAKE_TOOLCHAIN_FILE:FILEPATH=toolchain-${COMPILER}.cmake -DARCH:STRING=${ARCH} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DENABLE_CCACHE=${ENABLE_CCACHE_EFFECTIVE} -DENABLE_ROSTESTS=${ENABLE_ROSTESTS} -DENABLE_ROSAPPS=${ENABLE_ROSAPPS} -DI18N_LANG=${I18N_LANG} ${D_CLANG_VERSION:-}"
           echo "$cmd" > "$GITHUB_WORKSPACE/artifacts/configure-command.txt"
           printf '%s\n' "$cmd" | "$GITHUB_WORKSPACE/RosBE-CI/RosBE.sh" . 0 "$ARCH" 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/configure.log"
 
