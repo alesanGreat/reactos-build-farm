@@ -62,6 +62,14 @@ on:
         required: true
         default: false
         type: boolean
+      runtime_video:
+        description: QEMU VGA model for runtime validation
+        required: true
+        default: std
+        type: choice
+        options:
+          - std
+          - vmware
       runtime_iso:
         description: ISO basename in the build directory to boot when runtime_qemu is enabled
         required: true
@@ -100,6 +108,7 @@ jobs:
           TARGETS_RAW: ${{ inputs.targets }}
           I18N_LANG: ${{ inputs.i18n_lang }}
           RUNTIME_QEMU: ${{ inputs.runtime_qemu }}
+          RUNTIME_VIDEO: ${{ inputs.runtime_video }}
           RUNTIME_ISO: ${{ inputs.runtime_iso }}
           RUNTIME_MARKER: ${{ inputs.runtime_marker }}
           RUNTIME_TIMEOUT_SECONDS: ${{ inputs.runtime_timeout_seconds }}
@@ -118,6 +127,10 @@ jobs:
             exit 2
           fi
           if [[ "$RUNTIME_QEMU" == "true" ]]; then
+            if [[ "$RUNTIME_VIDEO" != "std" && "$RUNTIME_VIDEO" != "vmware" ]]; then
+              echo "Invalid runtime_video: $RUNTIME_VIDEO" >&2
+              exit 2
+            fi
             if [[ ! "$RUNTIME_ISO" =~ ^[A-Za-z0-9_.-]+\.iso$ ]]; then
               echo "Invalid runtime_iso: $RUNTIME_ISO" >&2
               exit 2
@@ -152,6 +165,7 @@ jobs:
             echo "source_ref=$SOURCE_REF"
             echo "targets=$TARGETS_RAW"
             echo "runtime_qemu=$RUNTIME_QEMU"
+            echo "runtime_video=$RUNTIME_VIDEO"
             echo "runtime_iso=$RUNTIME_ISO"
             echo "runtime_marker=$RUNTIME_MARKER"
             echo "runtime_timeout_seconds=$RUNTIME_TIMEOUT_SECONDS"
@@ -367,6 +381,7 @@ jobs:
         if: inputs.runtime_qemu
         shell: bash
         env:
+          RUNTIME_VIDEO: ${{ inputs.runtime_video }}
           RUNTIME_ISO: ${{ inputs.runtime_iso }}
           RUNTIME_MARKER: ${{ inputs.runtime_marker }}
           RUNTIME_TIMEOUT_SECONDS: ${{ inputs.runtime_timeout_seconds }}
@@ -393,7 +408,7 @@ jobs:
           : > "$qemu_log"
 
           printf '%q ' "$qemu_bin" -machine pc,accel=tcg -m 512 -boot order=d \
-            -cdrom "$iso_path" -display none -monitor none \
+            -cdrom "$iso_path" -vga "$RUNTIME_VIDEO" -display none -monitor none \
             -serial "file:$com1" -serial "file:$com2" -no-reboot \
             > "$runtime_dir/qemu-command.txt"
           printf '\n' >> "$runtime_dir/qemu-command.txt"
@@ -403,6 +418,7 @@ jobs:
             -m 512 \
             -boot order=d \
             -cdrom "$iso_path" \
+            -vga "$RUNTIME_VIDEO" \
             -display none \
             -monitor none \
             -serial "file:$com1" \
@@ -445,6 +461,7 @@ jobs:
           fi
 
           {
+            echo "video=$RUNTIME_VIDEO"
             echo "marker=$RUNTIME_MARKER"
             echo "marker_found=$marker_found"
             echo "qemu_exited_before_marker=$qemu_exited"
