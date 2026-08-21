@@ -57,6 +57,26 @@ on:
         required: true
         default: en-US
         type: string
+      runtime_qemu:
+        description: Run the built ISO headlessly under QEMU after a successful build
+        required: true
+        default: false
+        type: boolean
+      runtime_iso:
+        description: ISO basename in the build directory to boot when runtime_qemu is enabled
+        required: true
+        default: bootcd.iso
+        type: string
+      runtime_marker:
+        description: Fixed string that must appear on COM1 or COM2 for runtime success
+        required: false
+        default: ''
+        type: string
+      runtime_timeout_seconds:
+        description: Maximum QEMU runtime before the marker is considered missing
+        required: true
+        default: 300
+        type: number
 
 permissions:
   contents: read
@@ -79,6 +99,10 @@ jobs:
           SOURCE_REF: ${{ inputs.source_ref }}
           TARGETS_RAW: ${{ inputs.targets }}
           I18N_LANG: ${{ inputs.i18n_lang }}
+          RUNTIME_QEMU: ${{ inputs.runtime_qemu }}
+          RUNTIME_ISO: ${{ inputs.runtime_iso }}
+          RUNTIME_MARKER: ${{ inputs.runtime_marker }}
+          RUNTIME_TIMEOUT_SECONDS: ${{ inputs.runtime_timeout_seconds }}
         run: |
           set -euo pipefail
           if [[ ! "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
@@ -92,6 +116,20 @@ jobs:
           if [[ ! "$I18N_LANG" =~ ^[A-Za-z0-9_.@+-]+$ ]]; then
             echo "Invalid i18n_lang: $I18N_LANG" >&2
             exit 2
+          fi
+          if [[ "$RUNTIME_QEMU" == "true" ]]; then
+            if [[ ! "$RUNTIME_ISO" =~ ^[A-Za-z0-9_.-]+\.iso$ ]]; then
+              echo "Invalid runtime_iso: $RUNTIME_ISO" >&2
+              exit 2
+            fi
+            if [[ -z "$RUNTIME_MARKER" || "$RUNTIME_MARKER" == *$'\n'* || "$RUNTIME_MARKER" == *$'\r'* ]]; then
+              echo "runtime_marker must be a non-empty single-line fixed string" >&2
+              exit 2
+            fi
+            if (( RUNTIME_TIMEOUT_SECONDS < 30 || RUNTIME_TIMEOUT_SECONDS > 1800 )); then
+              echo "runtime_timeout_seconds must be between 30 and 1800" >&2
+              exit 2
+            fi
           fi
 
           read -r -a target_array <<< "$TARGETS_RAW"
@@ -113,6 +151,10 @@ jobs:
             echo "source_repository=$SOURCE_REPOSITORY"
             echo "source_ref=$SOURCE_REF"
             echo "targets=$TARGETS_RAW"
+            echo "runtime_qemu=$RUNTIME_QEMU"
+            echo "runtime_iso=$RUNTIME_ISO"
+            echo "runtime_marker=$RUNTIME_MARKER"
+            echo "runtime_timeout_seconds=$RUNTIME_TIMEOUT_SECONDS"
             echo "requested_by=${{ github.actor }}"
             echo "run_id=${{ github.run_id }}"
           } > "$GITHUB_WORKSPACE/artifacts/request.txt"
@@ -285,6 +327,141 @@ jobs:
           cmd="cmake --build $GITHUB_WORKSPACE/build --target ${targets_joined} -- -k0"
           echo "$cmd" > "$GITHUB_WORKSPACE/artifacts/build-command.txt"
           printf '%s\n' "$cmd" | "$GITHUB_WORKSPACE/RosBE-CI/RosBE.sh" . 0 "$ARCH" 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build.log"
+
+      - name: Ensure QEMU runtime dependency
+        if: inputs.runtime_qemu
+        shell: bash
+        run: |
+          set -euo pipefail
+          qemu_bin="qemu-system-i386"
+          if [[ "${{ inputs.arch }}" == "amd64" ]]; then
+            qemu_bin="qemu-system-x86_64"
+          fi
+          if command -v "$qemu_bin" >/dev/null 2>&1; then
+            "$qemu_bin" --version | head -n 1
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            echo "Installing QEMU, attempt $attempt/3"
+            if timeout 180s sudo apt-get \
+                  -o Acquire::Retries=5 \
+                  -o Acquire::http::Timeout=20 \
+                  -o Acquire::https::Timeout=20 \
+                  -o DPkg::Lock::Timeout=30 \
+                  update -qq && \
+               timeout 300s sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+                  -o Acquire::Retries=5 \
+                  -o Acquire::http::Timeout=20 \
+                  -o Acquire::https::Timeout=20 \
+                  -o DPkg::Lock::Timeout=30 \
+                  install -y --no-install-recommends qemu-system-x86; then
+              "$qemu_bin" --version | head -n 1
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "Unable to install QEMU runtime dependency" >&2
+          exit 1
+
+      - name: Run headless QEMU runtime
+        if: inputs.runtime_qemu
+        shell: bash
+        env:
+          RUNTIME_ISO: ${{ inputs.runtime_iso }}
+          RUNTIME_MARKER: ${{ inputs.runtime_marker }}
+          RUNTIME_TIMEOUT_SECONDS: ${{ inputs.runtime_timeout_seconds }}
+        run: |
+          set -euo pipefail
+          runtime_dir="$GITHUB_WORKSPACE/artifacts/runtime"
+          mkdir -p "$runtime_dir"
+          iso_path="$GITHUB_WORKSPACE/build/$RUNTIME_ISO"
+          if [[ ! -f "$iso_path" ]]; then
+            echo "Runtime ISO not found: $iso_path" >&2
+            exit 1
+          fi
+
+          qemu_bin="qemu-system-i386"
+          if [[ "${{ inputs.arch }}" == "amd64" ]]; then
+            qemu_bin="qemu-system-x86_64"
+          fi
+          com1="$runtime_dir/com1.log"
+          com2="$runtime_dir/com2.log"
+          qemu_log="$runtime_dir/qemu.log"
+          runtime_result="$runtime_dir/result.txt"
+          : > "$com1"
+          : > "$com2"
+          : > "$qemu_log"
+
+          printf '%q ' "$qemu_bin" -machine pc,accel=tcg -m 512 -boot order=d \
+            -cdrom "$iso_path" -display none -monitor none \
+            -serial "file:$com1" -serial "file:$com2" -no-reboot \
+            > "$runtime_dir/qemu-command.txt"
+          printf '\n' >> "$runtime_dir/qemu-command.txt"
+
+          "$qemu_bin" \
+            -machine pc,accel=tcg \
+            -m 512 \
+            -boot order=d \
+            -cdrom "$iso_path" \
+            -display none \
+            -monitor none \
+            -serial "file:$com1" \
+            -serial "file:$com2" \
+            -no-reboot \
+            > "$qemu_log" 2>&1 &
+          qemu_pid=$!
+          marker_found=0
+          qemu_exited=0
+          qemu_rc=0
+
+          for ((elapsed=0; elapsed<RUNTIME_TIMEOUT_SECONDS; elapsed+=2)); do
+            if grep -Fq -- "$RUNTIME_MARKER" "$com1" || grep -Fq -- "$RUNTIME_MARKER" "$com2"; then
+              marker_found=1
+              break
+            fi
+            if ! kill -0 "$qemu_pid" 2>/dev/null; then
+              qemu_exited=1
+              set +e
+              wait "$qemu_pid"
+              qemu_rc=$?
+              set -e
+              break
+            fi
+            sleep 2
+          done
+
+          if kill -0 "$qemu_pid" 2>/dev/null; then
+            kill "$qemu_pid" 2>/dev/null || true
+            for _ in {1..10}; do
+              if ! kill -0 "$qemu_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            if kill -0 "$qemu_pid" 2>/dev/null; then
+              kill -9 "$qemu_pid" 2>/dev/null || true
+            fi
+            wait "$qemu_pid" 2>/dev/null || true
+          fi
+
+          {
+            echo "marker=$RUNTIME_MARKER"
+            echo "marker_found=$marker_found"
+            echo "qemu_exited_before_marker=$qemu_exited"
+            echo "qemu_exit_code=$qemu_rc"
+          } > "$runtime_result"
+
+          if [[ "$marker_found" != 1 ]]; then
+            echo "Runtime marker not observed: $RUNTIME_MARKER" >&2
+            echo "--- COM1 tail ---" >&2
+            tail -n 80 "$com1" >&2 || true
+            echo "--- COM2 tail ---" >&2
+            tail -n 80 "$com2" >&2 || true
+            echo "--- QEMU tail ---" >&2
+            tail -n 80 "$qemu_log" >&2 || true
+            exit 1
+          fi
+          echo "Observed runtime marker: $RUNTIME_MARKER"
 
       - name: Record source revision
         if: always()
