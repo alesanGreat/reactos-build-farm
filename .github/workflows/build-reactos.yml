@@ -389,8 +389,16 @@ jobs:
           set -euo pipefail
           runtime_dir="$GITHUB_WORKSPACE/artifacts/runtime"
           mkdir -p "$runtime_dir"
+          runtime_result="$runtime_dir/result.txt"
           iso_path="$GITHUB_WORKSPACE/build/$RUNTIME_ISO"
           if [[ ! -f "$iso_path" ]]; then
+            {
+              echo "video=$RUNTIME_VIDEO"
+              echo "iso=$RUNTIME_ISO"
+              echo "marker=$RUNTIME_MARKER"
+              echo "marker_found=0"
+              echo "failure=iso_missing"
+            } > "$runtime_result"
             echo "Runtime ISO not found: $iso_path" >&2
             exit 1
           fi
@@ -402,7 +410,6 @@ jobs:
           com1="$runtime_dir/com1.log"
           com2="$runtime_dir/com2.log"
           qemu_log="$runtime_dir/qemu.log"
-          runtime_result="$runtime_dir/result.txt"
           : > "$com1"
           : > "$com2"
           : > "$qemu_log"
@@ -503,7 +510,7 @@ jobs:
           out.mkdir(parents=True, exist_ok=True)
           targets = [line.strip() for line in Path('targets.txt').read_text().splitlines() if line.strip()]
           stems = {Path(t).name.lower() for t in targets}
-          always_names = {'bootcd.iso', 'bootcdregtest.iso', 'livecd.iso'}
+          always_names = {'bootcd.iso', 'bootcdregtest.iso', 'liveimg.iso'}
           copied = []
           if root.exists():
               for path in root.rglob('*'):
