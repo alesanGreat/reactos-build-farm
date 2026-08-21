@@ -407,14 +407,14 @@ jobs:
           : > "$com2"
           : > "$qemu_log"
 
-          printf '%q ' "$qemu_bin" -machine pc,accel=tcg -m 512 -boot order=d \
+          printf '%q ' "$qemu_bin" -machine pc,accel=kvm:tcg -m 512 -boot order=d \
             -cdrom "$iso_path" -vga "$RUNTIME_VIDEO" -display none -monitor none \
             -serial "file:$com1" -serial "file:$com2" -no-reboot \
             > "$runtime_dir/qemu-command.txt"
           printf '\n' >> "$runtime_dir/qemu-command.txt"
 
           "$qemu_bin" \
-            -machine pc,accel=tcg \
+            -machine pc,accel=kvm:tcg \
             -m 512 \
             -boot order=d \
             -cdrom "$iso_path" \

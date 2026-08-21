@@ -6,7 +6,7 @@ Repositorio auxiliar para ejecutar builds dirigidos de ReactOS en GitHub Actions
 
 La compilación remota es una opción adicional, no un reemplazo destructivo del pipeline local. Los worktrees, RosBE, CMake/Ninja, QEMU y los procedimientos locales existentes se conservan.
 
-El workflow `ReactOS Target Build` recibe un repositorio público ReactOS, una rama/tag/SHA y una lista de targets. Configura RosBE en un runner Linux, compila sólo los targets solicitados y publica logs + artefactos encontrados. Opcionalmente también arranca un ISO en QEMU TCG headless, captura COM1/COM2 y exige un marker de runtime antes de declarar éxito.
+El workflow `ReactOS Target Build` recibe un repositorio público ReactOS, una rama/tag/SHA y una lista de targets. Configura RosBE en un runner Linux, compila sólo los targets solicitados y publica logs + artefactos encontrados. Opcionalmente también arranca un ISO en QEMU headless, usando KVM cuando el runner lo permite y TCG como fallback, captura COM1/COM2 y exige un marker de runtime antes de declarar éxito.
 
 Defaults deliberados para trabajo iterativo:
 
