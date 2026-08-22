@@ -67,6 +67,8 @@ Cada run conserva durante 14 días:
 - comando exacto de build;
 - log de build;
 - SHA real compilado;
+- estado inicial y final del árbol fuente, diffs binarios y huellas SHA-256;
+- un gate de integridad que falla si configure, build o runtime alteran el checkout;
 - estadísticas de ccache;
 - binarios/ISOs cuyo nombre coincida con los targets solicitados cuando puedan localizarse automáticamente;
 - si `runtime_qemu` está habilitado: `runtime/qemu-command.txt`, `runtime/qemu.log`, `runtime/com1.log`, `runtime/com2.log` y `runtime/result.txt`.

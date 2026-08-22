@@ -297,6 +297,22 @@ jobs:
           path: src
           fetch-depth: 1
 
+      - name: Snapshot initial source state
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_root="$GITHUB_WORKSPACE/src"
+          artifact_root="$GITHUB_WORKSPACE/artifacts"
+          git -C "$source_root" rev-parse HEAD > "$artifact_root/source-sha.txt"
+          git -C "$source_root" status --short > "$artifact_root/source-status-initial.txt"
+          git -C "$source_root" status --porcelain=v1 -z --untracked-files=all > "$artifact_root/source-state-initial.bin"
+          git -C "$source_root" diff --no-ext-diff --binary > "$artifact_root/source-diff-initial.patch"
+          git -C "$source_root" diff --cached --no-ext-diff --binary > "$artifact_root/source-index-diff-initial.patch"
+          cat "$artifact_root/source-state-initial.bin" \
+              "$artifact_root/source-diff-initial.patch" \
+              "$artifact_root/source-index-diff-initial.patch" |
+            sha256sum | awk '{print $1}' > "$artifact_root/source-state-initial.sha256"
+
       - name: Configure ccache
         shell: bash
         run: |
@@ -487,15 +503,41 @@ jobs:
           fi
           echo "Observed runtime marker: $RUNTIME_MARKER"
 
-      - name: Record source revision
+      - name: Verify source tree did not change
         if: always()
         shell: bash
         run: |
-          if [[ -d "$GITHUB_WORKSPACE/src/.git" ]]; then
-            git -C "$GITHUB_WORKSPACE/src" rev-parse HEAD > "$GITHUB_WORKSPACE/artifacts/source-sha.txt" || true
-            git -C "$GITHUB_WORKSPACE/src" status --short > "$GITHUB_WORKSPACE/artifacts/source-status.txt" || true
+          source_root="$GITHUB_WORKSPACE/src"
+          artifact_root="$GITHUB_WORKSPACE/artifacts"
+          source_changed=0
+
+          if [[ -d "$source_root/.git" ]]; then
+            git -C "$source_root" rev-parse HEAD > "$artifact_root/source-sha.txt" || true
+            git -C "$source_root" status --short > "$artifact_root/source-status.txt" || true
+            git -C "$source_root" status --porcelain=v1 -z --untracked-files=all > "$artifact_root/source-state-final.bin" || true
+            git -C "$source_root" diff --no-ext-diff --binary > "$artifact_root/source-diff-final.patch" || true
+            git -C "$source_root" diff --cached --no-ext-diff --binary > "$artifact_root/source-index-diff-final.patch" || true
+            cat "$artifact_root/source-state-final.bin" \
+                "$artifact_root/source-diff-final.patch" \
+                "$artifact_root/source-index-diff-final.patch" |
+              sha256sum | awk '{print $1}' > "$artifact_root/source-state-final.sha256"
+
+            if ! cmp -s "$artifact_root/source-state-initial.bin" "$artifact_root/source-state-final.bin" ||
+               ! cmp -s "$artifact_root/source-diff-initial.patch" "$artifact_root/source-diff-final.patch" ||
+               ! cmp -s "$artifact_root/source-index-diff-initial.patch" "$artifact_root/source-index-diff-final.patch"; then
+              source_changed=1
+            fi
+          else
+            source_changed=1
           fi
-          ccache -s > "$GITHUB_WORKSPACE/artifacts/ccache.txt" 2>&1 || true
+
+          echo "source_changed_during_run=$source_changed" > "$artifact_root/source-integrity.txt"
+          ccache -s > "$artifact_root/ccache.txt" 2>&1 || true
+
+          if [[ "$source_changed" != 0 ]]; then
+            echo "ReactOS source tree changed during build or runtime" >&2
+            exit 1
+          fi
 
       - name: Collect target artifacts
         if: always()
